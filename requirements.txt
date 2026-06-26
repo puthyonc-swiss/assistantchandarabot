@@ -1,5 +1,9 @@
 # Telegram bot library (current stable as of June 2026)
-python-telegram-bot==22.7
+# [webhooks] extra is REQUIRED because bot.py uses run_webhook() - without
+# this extra, Render's deploy fails with:
+#   RuntimeError: To use `start_webhook`, PTB must be installed via
+#   `pip install "python-telegram-bot[webhooks]"`.
+python-telegram-bot[webhooks]==22.7
 
 # Google Gemini AI SDK (current official unified SDK)
 google-genai==2.3.0
