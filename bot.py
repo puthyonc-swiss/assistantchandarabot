@@ -52,10 +52,22 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# RENDER_EXTERNAL_URL is set AUTOMATICALLY by Render itself for every Web
+# Service (you don't need to type this in - Render fills it in for you).
+# It looks like: https://your-service-name.onrender.com
+# We need it to tell Telegram where to send messages (the webhook address).
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN environment variable.")
 if not GEMINI_API_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY environment variable.")
+if not RENDER_EXTERNAL_URL:
+    raise RuntimeError(
+        "Missing RENDER_EXTERNAL_URL environment variable. "
+        "This should be set automatically by Render for Web Services. "
+        "If running locally for testing, set it manually to a placeholder."
+    )
 
 # One shared Gemini client for the whole bot
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -303,8 +315,25 @@ def main() -> None:
 
     application.add_handler(conv_handler)
 
-    logger.info("Bot starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # ── Webhook setup (instead of polling) ─────────────────────────────────
+    # Render gives every Web Service a random port via the PORT env variable -
+    # we MUST read it dynamically, never hardcode a port number.
+    port = int(os.environ.get("PORT", 8443))
+
+    # This is the URL Telegram will send messages to. We use the bot token
+    # in the path as a simple way to make sure random internet traffic can't
+    # pretend to be Telegram (only someone who knows the token can hit this
+    # exact URL correctly).
+    webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
+
+    logger.info(f"Bot starting in webhook mode on port {port}...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TELEGRAM_BOT_TOKEN,
+        webhook_url=webhook_url,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
