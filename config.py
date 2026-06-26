@@ -19,7 +19,7 @@ LIVE_SCORE_LINK = "https://example.com/your-live-score-link"  # <-- replace with
 #   3. Visit: https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 #   4. Look for "chat":{"id": ... } in the response
 GROUPS = [
-    {"name": "📢 Main Group", "id": -1000000000001},   # <-- replace with real ID
+    {"name": "Test Group", "id": -5324605890},   # <-- replace with real ID
     {"name": "🏆 VIP Group", "id": -1000000000002},    # <-- replace with real ID
     {"name": "📊 Public Channel", "id": -1000000000003},  # <-- replace with real ID
 ]
