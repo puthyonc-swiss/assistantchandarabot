@@ -1,0 +1,17 @@
+# render.yaml
+# This tells Render how to run this bot.
+# In Render's dashboard, when creating the service, choose "Worker"
+# (not "Web Service") since this bot doesn't need to receive HTTP requests -
+# it connects out to Telegram itself (this is called "polling").
+
+services:
+  - type: worker
+    name: swisskh-report-bot
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false   # you'll type the real value in Render's dashboard, not here
+      - key: GEMINI_API_KEY
+        sync: false   # same - typed directly into Render's dashboard

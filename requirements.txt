@@ -1,0 +1,10 @@
+# Telegram bot library (current stable as of June 2026)
+python-telegram-bot==22.7
+
+# Google Gemini AI SDK (current official unified SDK)
+google-genai==2.3.0
+
+# Used to load environment variables from a local .env file when testing
+# on your own computer (Render itself doesn't need this, it has its own
+# environment variable system)
+python-dotenv==1.0.1
