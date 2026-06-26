@@ -19,6 +19,7 @@ SECRETS NEEDED (set these as environment variables, never hardcode them):
 import os
 import logging
 import asyncio
+import time
 
 from telegram import (
     Update,
@@ -36,8 +37,11 @@ from telegram.ext import (
     filters,
 )
 
+import time
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
+from google.genai import errors as genai_errors
 
 import config  # our editable settings file (groups, link, event name)
 
@@ -80,6 +84,14 @@ WAITING_FOR_START_TIME, CHOOSING_GROUPS = range(2)
 # vision (reading images). Good fit for simple screenshot reading.
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
+# Retry settings for when Gemini's servers are temporarily overloaded
+# (HTTP 503 "Service Unavailable" / "high demand" errors). These are NOT
+# bugs in our code - Google's servers occasionally reject requests for a
+# few seconds during traffic spikes, and retrying after a short wait
+# usually succeeds.
+GEMINI_MAX_RETRIES = 3
+GEMINI_RETRY_DELAY_SECONDS = 3
+
 
 # ───────────────────────────────────────────────────────────────────────────
 # STEP 1: Receive the photo, send it to Gemini, read back what it found
@@ -99,26 +111,52 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["photo_file_id"] = update.message.photo[-1].file_id
 
     # Ask Gemini to read the screenshot
-    try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg"),
-                (
-                    "This is a screenshot from a petanque tournament management "
-                    "system. Look for: which ROUND number is shown (e.g. Round 1, "
-                    "Round 2), and any tournament/event name visible. "
-                    "Reply in this exact format, nothing else:\n"
-                    "ROUND: <round number or 'unknown'>\n"
-                    "NOTES: <anything else relevant you noticed, one short line>"
-                ),
-            ],
-        )
-        gemini_text = response.text or ""
-    except Exception as e:
-        logger.error(f"Gemini error: {e}")
+    # We retry automatically if Gemini's servers are temporarily overloaded
+    # (503 errors) - this is common and usually resolves within seconds.
+    gemini_text = ""
+    last_error = None
+
+    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
+        try:
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg"),
+                    (
+                        "This is a screenshot from a petanque tournament management "
+                        "system. Look for: which ROUND number is shown (e.g. Round 1, "
+                        "Round 2), and any tournament/event name visible. "
+                        "Reply in this exact format, nothing else:\n"
+                        "ROUND: <round number or 'unknown'>\n"
+                        "NOTES: <anything else relevant you noticed, one short line>"
+                    ),
+                ],
+            )
+            gemini_text = response.text or ""
+            last_error = None
+            break  # success - stop retrying
+
+        except genai_errors.ServerError as e:
+            # 5xx errors (e.g. 503 "high demand") - worth retrying
+            last_error = e
+            logger.warning(
+                f"Gemini server error on attempt {attempt}/{GEMINI_MAX_RETRIES}: {e}"
+            )
+            if attempt < GEMINI_MAX_RETRIES:
+                await asyncio.sleep(GEMINI_RETRY_DELAY_SECONDS)
+
+        except Exception as e:
+            # Anything else (bad request, auth error, etc.) - retrying won't
+            # help, so fail immediately instead of wasting time.
+            last_error = e
+            logger.error(f"Gemini error (not retrying): {e}")
+            break
+
+    if last_error is not None:
+        logger.error(f"Gemini call failed after retries: {last_error}")
         await update.message.reply_text(
-            "⚠️ I couldn't read the photo (AI error). Please try sending it again."
+            "⚠️ I couldn't read the photo right now (the AI service is busy). "
+            "Please try sending the photo again in a moment."
         )
         return ConversationHandler.END
 
