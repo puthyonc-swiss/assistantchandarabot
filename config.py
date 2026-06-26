@@ -26,4 +26,4 @@ GROUPS = [
 
 # ── Event name shown in reports (you can hardcode it, or we can make it
 #    ask you each time later — keeping it simple for now) ─────────────────
-EVENT_NAME = "Petanque SwissKH Tournament"
+EVENT_NAME = "ការប្រកួតពាន់រង្វាន់អភិបាលខេត្តកែប"
