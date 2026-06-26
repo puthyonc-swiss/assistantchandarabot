@@ -1,13 +1,16 @@
 # render.yaml
 # This tells Render how to run this bot.
-# In Render's dashboard, when creating the service, choose "Worker"
-# (not "Web Service") since this bot doesn't need to receive HTTP requests -
-# it connects out to Telegram itself (this is called "polling").
+# In Render's dashboard, when creating the service, choose "Web Service"
+# (NOT "Background Worker") since the bot now uses WEBHOOKS - Telegram
+# sends messages TO this service via HTTP, instead of the bot constantly
+# asking Telegram for updates. This is what allows it to run on Render's
+# FREE tier.
 
 services:
-  - type: worker
+  - type: web
     name: swisskh-report-bot
     runtime: python
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python bot.py"
     envVars:
@@ -15,3 +18,5 @@ services:
         sync: false   # you'll type the real value in Render's dashboard, not here
       - key: GEMINI_API_KEY
         sync: false   # same - typed directly into Render's dashboard
+      # RENDER_EXTERNAL_URL is provided AUTOMATICALLY by Render for Web
+      # Services - you do NOT need to add it yourself.
