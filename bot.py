@@ -5,15 +5,19 @@ SwissKH Telegram Report Bot
 
 WHAT THIS BOT DOES (step by step):
   1. You send one or more screenshot photos to the bot (private chat) -
-     send them as an album, or one at a time, either works the same way
-  2. Bot collects each photo silently and shows a "Done" button
-  3. When you tap Done, bot sends ONLY THE FIRST photo to Gemini AI to
-     read the round/event info (no need to "read" every photo)
-  4. If something important is missing (like start time), bot asks you
-  5. Bot shows you the draft report (ALL photos + one caption) for approval
-  6. Bot shows checkbox buttons for each group (from config.py)
-  7. You tap groups, then tap "Send" -> bot posts ALL photos (as one
-     album) + the caption to those groups
+     send them as an album, or one at a time, either works the same way.
+     One status message updates in place showing the running count, with
+     "Done" and "Add more" buttons.
+  2. When you tap Done, bot asks: Manual or AI read?
+     - AI read: sends ONLY THE FIRST photo to Gemini AI to detect the
+       round number (ORIGINAL/unchanged behavior), then asks start time.
+     - Manual: you pick the round/stage from Khmer buttons, type the
+       start time, then pick time limit and score limit from buttons.
+  3. Bot shows you the draft report (ALL photos + one caption) for approval
+  4. Bot shows checkbox buttons for each group (from config.py)
+  5. You tap groups, then tap "Send" -> bot posts ALL photos (as one
+     album) + the caption to those groups. Session then resets so the
+     next photo you send starts a brand new report.
 
 SECRETS NEEDED (set these as environment variables, never hardcode them):
   TELEGRAM_BOT_TOKEN   - from @BotFather
@@ -81,7 +85,46 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Conversation states ────────────────────────────────────────────────────
 # These are just labels for "where we are" in the chat with the user.
-COLLECTING_PHOTOS, WAITING_FOR_START_TIME, CHOOSING_GROUPS = range(3)
+(
+    COLLECTING_PHOTOS,
+    CHOOSING_MODE,
+    CHOOSING_MANUAL_ROUND,
+    WAITING_FOR_MANUAL_TIME,
+    CHOOSING_TIME_LIMIT,
+    CHOOSING_SCORE_LIMIT,
+    WAITING_FOR_START_TIME,
+    CHOOSING_GROUPS,
+) = range(8)
+
+# ── Manual mode options (Khmer labels) ─────────────────────────────────────
+# Round/stage names for the Manual flow. Order matters - this is the order
+# buttons appear in (2 per row).
+MANUAL_ROUND_OPTIONS = [
+    "ជុំទី 1",
+    "ជុំទី 2",
+    "ជុំទី 3",
+    "ជុំទី 4",
+    "ជុំទី 5",
+    "វគ្គ 1/16 ផ្តាច់ព្រ័ត្រ",
+    "វគ្គ 1/8 ផ្តាច់ព្រ័ត្រ",
+    "វគ្គ 1/4 ផ្តាច់ព្រ័ត្រ",
+    "វគ្គពាក់កណ្តាលផ្តាច់ព្រ័ត្រ",
+    "វគ្គផ្តាច់ព្រ័ត្រ",
+]
+
+# Time limit options for the Manual flow (1 per row).
+MANUAL_TIME_LIMIT_OPTIONS = [
+    "30 នាទី + 1សេវ៉ា",
+    "40 នាទី + 1សេវ៉ា",
+    "50 នាទី + 1សេវ៉ា",
+    "60 នាទី + 1សេវ៉ា",
+]
+
+# Score limit options for the Manual flow.
+MANUAL_SCORE_LIMIT_OPTIONS = [
+    "លេង 11 ពិន្ទុ",
+    "លេង 13 ពិន្ទុ",
+]
 
 # Model choice: Flash-Lite is the cheapest Gemini model that still supports
 # vision (reading images). Good fit for simple screenshot reading.
@@ -168,9 +211,7 @@ async def handle_add_more_tapped(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Triggered when the user taps '✅ Done selecting photos'.
-    Takes the FIRST photo collected and sends it to Gemini to read the
-    round number. The other photos (if any) are kept for later, when we
-    post the final report - all photos go out together as an album."""
+    Asks whether to use Manual entry or AI read for the round/time info."""
 
     query = update.callback_query
     await query.answer()
@@ -182,6 +223,31 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
         )
         clear_session_data(context)
         return ConversationHandler.END
+
+    await query.edit_message_text(
+        f"📸 Got {len(photos)} photo(s).\n\nWhich one do you want to work?",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✍️ Manual", callback_data="mode_manual"),
+                InlineKeyboardButton("🤖 AI read", callback_data="mode_ai"),
+            ]
+        ]),
+    )
+    return CHOOSING_MODE
+
+
+async def handle_ai_read_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when the user taps '🤖 AI read'.
+    Takes the FIRST photo collected and sends it to Gemini to read the
+    round number. The other photos (if any) are kept for later, when we
+    post the final report - all photos go out together as an album.
+    This is the ORIGINAL/unchanged AI-read behavior - just moved here from
+    what used to be handle_done_collecting."""
+
+    query = update.callback_query
+    await query.answer()
+
+    photos = context.user_data.get("photos", [])
 
     await query.edit_message_text(
         f"📸 Got {len(photos)} photo(s). Reading the first one..."
@@ -273,10 +339,12 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# STEP 2: Receive the start time (or missing round info) typed by the user
+# STEP 2 (AI path): Receive the start time (or missing round info) typed
+# by the user
 # ───────────────────────────────────────────────────────────────────────────
 async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when the user replies with the start time (plain text)."""
+    """Triggered when the user replies with the start time (plain text).
+    This is part of the AI-read path only - unchanged from before."""
 
     user_text = update.message.text.strip()
 
@@ -291,12 +359,21 @@ async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Otherwise, this message is the start time
     context.user_data["start_time"] = user_text
 
-    # Build the draft caption
+    # Build the draft caption (OLD/unchanged format for the AI path)
     round_value = context.user_data.get("round_value", "?")
     caption = build_caption(round_value, user_text)
+
+    return await show_draft_and_group_buttons(update.message, context, caption)
+
+
+async def show_draft_and_group_buttons(message, context: ContextTypes.DEFAULT_TYPE, caption: str) -> int:
+    """Shared by BOTH the AI-read and Manual paths: stores the final
+    caption, shows the draft (all photos + caption) for approval, then
+    shows the group checkboxes. message can be a real Message object or
+    any object with reply_media_group/reply_text (e.g. query.message)."""
+
     context.user_data["caption"] = caption
 
-    # Show the draft (ALL photos + caption) back to the user for approval.
     # Telegram only shows the caption under the FIRST photo in an album -
     # that's a Telegram limitation, not something we can change.
     photos = context.user_data.get("photos", [])
@@ -304,11 +381,11 @@ async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         InputMediaPhoto(media=file_id, caption=caption if i == 0 else None)
         for i, file_id in enumerate(photos)
     ]
-    await update.message.reply_media_group(media=media_group)
+    await message.reply_media_group(media=media_group)
 
     # Show group checkboxes
     context.user_data["selected_groups"] = set()
-    await update.message.reply_text(
+    await message.reply_text(
         "👆 Here's the draft report. Select which group(s) to send it to:",
         reply_markup=build_group_keyboard(set()),
     )
@@ -316,11 +393,134 @@ async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 def build_caption(round_value: str, start_time: str) -> str:
-    """Builds the final report text shown with the photo."""
+    """Builds the final report text for the AI-read path (OLD/unchanged
+    format)."""
     return (
         f"🏆 {config.EVENT_NAME}\n\n"
         f"📋 Round {round_value} started at {start_time}\n\n"
         f"📊 Track live scores here:\n{config.LIVE_SCORE_LINK}"
+    )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Manual path: round selection -> start time -> time limit -> score limit
+# ───────────────────────────────────────────────────────────────────────────
+def build_manual_round_keyboard() -> InlineKeyboardMarkup:
+    """Builds the round/stage selection buttons, 2 per row."""
+    rows = []
+    for i in range(0, len(MANUAL_ROUND_OPTIONS), 2):
+        pair = MANUAL_ROUND_OPTIONS[i:i + 2]
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"manual_round:{idx}")
+            for idx, label in zip(range(i, i + len(pair)), pair)
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_manual_time_limit_keyboard() -> InlineKeyboardMarkup:
+    """Builds the time-limit selection buttons, 1 per row."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"manual_timelimit:{idx}")]
+        for idx, label in enumerate(MANUAL_TIME_LIMIT_OPTIONS)
+    ])
+
+
+def build_manual_score_limit_keyboard() -> InlineKeyboardMarkup:
+    """Builds the score-limit selection buttons."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"manual_scorelimit:{idx}")]
+        for idx, label in enumerate(MANUAL_SCORE_LIMIT_OPTIONS)
+    ])
+
+
+async def handle_manual_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when the user taps '✍️ Manual'. Shows the round/stage
+    selection buttons."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "តើជុំទីប៉ុន្មាន? (Which round?)",
+        reply_markup=build_manual_round_keyboard(),
+    )
+    return CHOOSING_MANUAL_ROUND
+
+
+async def handle_manual_round_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when a round/stage button is tapped. Stores the chosen
+    label and asks for the start time (text input, same style as the AI
+    path's time question)."""
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.split(":", 1)[1])
+    round_label = MANUAL_ROUND_OPTIONS[idx]
+    context.user_data["manual_round_label"] = round_label
+
+    await query.edit_message_text(
+        f"✅ {round_label}\n\n"
+        "What time did this round start? (e.g. 12:00 PM)"
+    )
+    return WAITING_FOR_MANUAL_TIME
+
+
+async def handle_manual_time_entered(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when the user types the start time for the Manual path."""
+    user_text = update.message.text.strip()
+    context.user_data["manual_start_time"] = user_text
+
+    await update.message.reply_text(
+        "What is the time limit?",
+        reply_markup=build_manual_time_limit_keyboard(),
+    )
+    return CHOOSING_TIME_LIMIT
+
+
+async def handle_manual_time_limit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when a time-limit button is tapped."""
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.split(":", 1)[1])
+    time_limit_label = MANUAL_TIME_LIMIT_OPTIONS[idx]
+    context.user_data["manual_time_limit_label"] = time_limit_label
+
+    await query.edit_message_text(
+        f"✅ {time_limit_label}\n\nWhat is the score to play to?",
+        reply_markup=build_manual_score_limit_keyboard(),
+    )
+    return CHOOSING_SCORE_LIMIT
+
+
+async def handle_manual_score_limit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when a score-limit button is tapped. This is the LAST
+    manual input step - builds the final caption and shows the draft."""
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.split(":", 1)[1])
+    score_limit_label = MANUAL_SCORE_LIMIT_OPTIONS[idx]
+    context.user_data["manual_score_limit_label"] = score_limit_label
+
+    caption = build_manual_caption(
+        round_label=context.user_data["manual_round_label"],
+        start_time=context.user_data["manual_start_time"],
+        time_limit_label=context.user_data["manual_time_limit_label"],
+        score_limit_label=score_limit_label,
+    )
+
+    await query.edit_message_text(f"✅ {score_limit_label}")
+    return await show_draft_and_group_buttons(query.message, context, caption)
+
+
+def build_manual_caption(round_label: str, start_time: str, time_limit_label: str, score_limit_label: str) -> str:
+    """Builds the final report text for the MANUAL path (NEW format,
+    confirmed with Chandara)."""
+    return (
+        f"🏆 {config.EVENT_NAME}\n\n"
+        f"{round_label}\n\n"
+        f"ចាប់ផ្តើមប្រកួតម៉ោង {start_time} | {time_limit_label} | {score_limit_label}\n\n"
+        f"តាមដានពិន្ទុគេហទំព័រខាងក្រោមនេះ\n"
+        f"{config.LIVE_SCORE_LINK}"
     )
 
 
@@ -451,6 +651,22 @@ def main() -> None:
                 MessageHandler(filters.PHOTO, handle_photo),  # more photos arriving
                 CallbackQueryHandler(handle_done_collecting, pattern="^done_collecting$"),
                 CallbackQueryHandler(handle_add_more_tapped, pattern="^add_more_tapped$"),
+            ],
+            CHOOSING_MODE: [
+                CallbackQueryHandler(handle_manual_chosen, pattern="^mode_manual$"),
+                CallbackQueryHandler(handle_ai_read_chosen, pattern="^mode_ai$"),
+            ],
+            CHOOSING_MANUAL_ROUND: [
+                CallbackQueryHandler(handle_manual_round_selected, pattern="^manual_round:"),
+            ],
+            WAITING_FOR_MANUAL_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_time_entered),
+            ],
+            CHOOSING_TIME_LIMIT: [
+                CallbackQueryHandler(handle_manual_time_limit_selected, pattern="^manual_timelimit:"),
+            ],
+            CHOOSING_SCORE_LIMIT: [
+                CallbackQueryHandler(handle_manual_score_limit_selected, pattern="^manual_scorelimit:"),
             ],
             WAITING_FOR_START_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
