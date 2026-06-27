@@ -126,6 +126,17 @@ MANUAL_SCORE_LIMIT_OPTIONS = [
     "លេង 13 ពិន្ទុ",
 ]
 
+# Rounds that get AUTO-FILLED time limit + score (skip those 2 questions).
+# Indices 0-7 = ជុំទី 1,2,3,4,5 + វគ្គ 1/16, 1/8, 1/4 (confirmed with Chandara).
+# Indices 8-9 (half-final, final) are NOT in this set - they keep asking
+# manually via buttons, unchanged.
+AUTO_FILL_ROUND_INDICES = set(range(0, 8))
+
+# Default values used for auto-filled rounds. These can still be changed
+# afterward via the "✏️ Edit time & score" button on the draft screen.
+AUTO_FILL_TIME_LIMIT_LABEL = "40 នាទី + 1សេវ៉ា"
+AUTO_FILL_SCORE_LIMIT_LABEL = "លេង 11 ពិន្ទុ"
+
 # Model choice: Flash-Lite is the cheapest Gemini model that still supports
 # vision (reading images). Good fit for simple screenshot reading.
 GEMINI_MODEL = "gemini-2.5-flash-lite"
@@ -366,13 +377,16 @@ async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return await show_draft_and_group_buttons(update.message, context, caption)
 
 
-async def show_draft_and_group_buttons(message, context: ContextTypes.DEFAULT_TYPE, caption: str) -> int:
+async def show_draft_and_group_buttons(message, context: ContextTypes.DEFAULT_TYPE, caption: str, is_manual: bool = False) -> int:
     """Shared by BOTH the AI-read and Manual paths: stores the final
     caption, shows the draft (all photos + caption) for approval, then
     shows the group checkboxes. message can be a real Message object or
-    any object with reply_media_group/reply_text (e.g. query.message)."""
+    any object with reply_media_group/reply_text (e.g. query.message).
+    is_manual=True adds the '✏️ Edit time & score' button (Manual path
+    only - AI-read path has no time-limit/score-limit to edit)."""
 
     context.user_data["caption"] = caption
+    context.user_data["is_manual_report"] = is_manual
 
     # Telegram only shows the caption under the FIRST photo in an album -
     # that's a Telegram limitation, not something we can change.
@@ -387,7 +401,7 @@ async def show_draft_and_group_buttons(message, context: ContextTypes.DEFAULT_TY
     context.user_data["selected_groups"] = set()
     await message.reply_text(
         "👆 Here's the draft report. Select which group(s) to send it to:",
-        reply_markup=build_group_keyboard(set()),
+        reply_markup=build_group_keyboard(set(), show_edit_time_score=is_manual),
     )
     return CHOOSING_GROUPS
 
@@ -448,13 +462,16 @@ async def handle_manual_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_manual_round_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Triggered when a round/stage button is tapped. Stores the chosen
     label and asks for the start time (text input, same style as the AI
-    path's time question)."""
+    path's time question). Also remembers whether this round is one of
+    the AUTO-FILL rounds (ជុំទី 1-5, វគ្គ 1/16, 1/8, 1/4), so the next
+    step knows whether to skip the time-limit/score-limit questions."""
     query = update.callback_query
     await query.answer()
 
     idx = int(query.data.split(":", 1)[1])
     round_label = MANUAL_ROUND_OPTIONS[idx]
     context.user_data["manual_round_label"] = round_label
+    context.user_data["manual_is_auto_fill_round"] = idx in AUTO_FILL_ROUND_INDICES
 
     await query.edit_message_text(
         f"✅ {round_label}\n\n"
@@ -464,9 +481,22 @@ async def handle_manual_round_selected(update: Update, context: ContextTypes.DEF
 
 
 async def handle_manual_time_entered(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when the user types the start time for the Manual path."""
+    """Triggered when the user types the start time for the Manual path.
+
+    Branches here:
+      - AUTO-FILL rounds (ជុំទី 1-5, វគ្គ 1/16, 1/8, 1/4): skip the
+        time-limit/score-limit questions, auto-set them, go straight
+        to the draft.
+      - Other rounds (half-final, final): continue to the time-limit
+        buttons as before (unchanged behavior).
+    """
     user_text = update.message.text.strip()
     context.user_data["manual_start_time"] = user_text
+
+    if context.user_data.get("manual_is_auto_fill_round"):
+        context.user_data["manual_time_limit_label"] = AUTO_FILL_TIME_LIMIT_LABEL
+        context.user_data["manual_score_limit_label"] = AUTO_FILL_SCORE_LIMIT_LABEL
+        return await finalize_manual_caption_and_show_draft(update.message, context)
 
     await update.message.reply_text(
         "What is the time limit?",
@@ -501,22 +531,16 @@ async def handle_manual_score_limit_selected(update: Update, context: ContextTyp
     score_limit_label = MANUAL_SCORE_LIMIT_OPTIONS[idx]
     context.user_data["manual_score_limit_label"] = score_limit_label
 
-    caption = build_manual_caption(
-        round_label=context.user_data["manual_round_label"],
-        start_time=context.user_data["manual_start_time"],
-        time_limit_label=context.user_data["manual_time_limit_label"],
-        score_limit_label=score_limit_label,
-    )
-
     await query.edit_message_text(f"✅ {score_limit_label}")
-    return await show_draft_and_group_buttons(query.message, context, caption)
+    return await finalize_manual_caption_and_show_draft(query.message, context)
 
 
 def build_manual_caption(round_label: str, start_time: str, time_limit_label: str, score_limit_label: str) -> str:
     """Builds the final report text for the MANUAL path.
     Layout confirmed with Chandara:
       - Each line has a meaning-based emoji (not literal sport icons,
-        since there's no pétanque emoji in Unicode)
+        since there's no pétanque emoji in Unicode) - EXCEPT score limit,
+        which has no emoji (confirmed)
       - Start time gets its OWN row
       - Time limit + score limit stay together on the row below it
     """
@@ -524,10 +548,27 @@ def build_manual_caption(round_label: str, start_time: str, time_limit_label: st
         f"🏆 {config.EVENT_NAME}\n\n"
         f"🎯 {round_label}\n\n"
         f"⏰ ចាប់ផ្តើមប្រកួតម៉ោង {start_time}\n"
-        f"⏱️ {time_limit_label} | 🎱 {score_limit_label}\n\n"
-        f"📊 តាមដានពិន្ទុគេហទំព័រខាងក្រោមនេះ\n"
+        f"⏱️ {time_limit_label} | {score_limit_label}\n\n"
+        f"📊 តាមដានពិន្ទុតាមគេហទំព័រខាងក្រោមនេះ\n"
         f"{config.LIVE_SCORE_LINK}"
     )
+
+
+async def finalize_manual_caption_and_show_draft(message, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Shared final step for the Manual path: builds the caption from
+    whatever round/time/time-limit/score-limit values are currently
+    stored, then shows the draft. Used by BOTH:
+      - the auto-fill path (skips straight here after start time)
+      - the normal manual path (after picking time-limit + score-limit)
+      - the "Edit time & score" re-edit flow (after re-picking both)
+    """
+    caption = build_manual_caption(
+        round_label=context.user_data["manual_round_label"],
+        start_time=context.user_data["manual_start_time"],
+        time_limit_label=context.user_data["manual_time_limit_label"],
+        score_limit_label=context.user_data["manual_score_limit_label"],
+    )
+    return await show_draft_and_group_buttons(message, context, caption, is_manual=True)
 
 
 def clear_session_data(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -541,9 +582,16 @@ def clear_session_data(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ───────────────────────────────────────────────────────────────────────────
 # STEP 3: Build and handle the group selection buttons
 # ───────────────────────────────────────────────────────────────────────────
-def build_group_keyboard(selected_ids: set) -> InlineKeyboardMarkup:
-    """Builds the checkbox-style button list from config.GROUPS."""
+def build_group_keyboard(selected_ids: set, show_edit_time_score: bool = False) -> InlineKeyboardMarkup:
+    """Builds the checkbox-style button list from config.GROUPS.
+    show_edit_time_score adds an extra '✏️ Edit time & score' button above
+    the group checkboxes - only relevant for Manual-path reports (the
+    AI-read path never has a time-limit/score-limit to edit)."""
     rows = []
+
+    if show_edit_time_score:
+        rows.append([InlineKeyboardButton("✏️ Edit time & score", callback_data="edit_time_score")])
+
     for group in config.GROUPS:
         checked = "☑️" if group["id"] in selected_ids else "⬜"
         rows.append([
@@ -555,6 +603,20 @@ def build_group_keyboard(selected_ids: set) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("✅ Send to selected groups", callback_data="send_now")])
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+async def handle_edit_time_score_tapped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when '✏️ Edit time & score' is tapped on the draft screen
+    (Manual path only). Re-shows the time-limit buttons; after picking
+    both time-limit and score-limit again, returns to the draft with the
+    updated caption (reuses the same handlers as the normal manual flow)."""
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(
+        "What is the time limit?",
+        reply_markup=build_manual_time_limit_keyboard(),
+    )
+    return CHOOSING_TIME_LIMIT
 
 
 async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -678,6 +740,7 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
             ],
             CHOOSING_GROUPS: [
+                CallbackQueryHandler(handle_edit_time_score_tapped, pattern="^edit_time_score$"),
                 CallbackQueryHandler(handle_group_button),
             ],
         },
