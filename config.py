@@ -6,6 +6,16 @@ Do NOT put secrets (bot token, Gemini API key) here — those go in
 environment variables on Render (see render_env_example.txt).
 """
 
+# ── Who is allowed to use this bot ────────────────────────────────────────
+# Only these Telegram user IDs can send photos / generate reports. Anyone
+# else gets a polite "not authorized" message instead of the normal flow.
+# To find a person's numeric Telegram user ID: have them message
+# @userinfobot on Telegram - it replies instantly with their ID.
+ALLOWED_USER_IDS = {
+    829243763,   # Chandara
+    647674875,   # Sivmeng
+}
+
 # ── Live score link (shown in every report) ──────────────────────────────
 LIVE_SCORE_LINK = "https://swisskh-app.web.app/live.html?id=6PjzJTLuIiSRHaEmh08AKZA8VmM2"  # <-- replace with your real link
 
