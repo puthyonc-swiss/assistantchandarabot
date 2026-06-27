@@ -513,13 +513,19 @@ async def handle_manual_score_limit_selected(update: Update, context: ContextTyp
 
 
 def build_manual_caption(round_label: str, start_time: str, time_limit_label: str, score_limit_label: str) -> str:
-    """Builds the final report text for the MANUAL path (NEW format,
-    confirmed with Chandara)."""
+    """Builds the final report text for the MANUAL path.
+    Layout confirmed with Chandara:
+      - Each line has a meaning-based emoji (not literal sport icons,
+        since there's no pétanque emoji in Unicode)
+      - Start time gets its OWN row
+      - Time limit + score limit stay together on the row below it
+    """
     return (
         f"🏆 {config.EVENT_NAME}\n\n"
-        f"{round_label}\n\n"
-        f"ចាប់ផ្តើមប្រកួតម៉ោង {start_time} | {time_limit_label} | {score_limit_label}\n\n"
-        f"តាមដានពិន្ទុគេហទំព័រខាងក្រោមនេះ\n"
+        f"🎯 {round_label}\n\n"
+        f"⏰ ចាប់ផ្តើមប្រកួតម៉ោង {start_time}\n"
+        f"⏱️ {time_limit_label} | 🎱 {score_limit_label}\n\n"
+        f"📊 តាមដានពិន្ទុគេហទំព័រខាងក្រោមនេះ\n"
         f"{config.LIVE_SCORE_LINK}"
     )
 
