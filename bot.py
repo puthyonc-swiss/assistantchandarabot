@@ -103,7 +103,12 @@ GEMINI_RETRY_DELAY_SECONDS = 3
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Triggered every time the user sends a photo. Just stores it - does
     NOT call Gemini yet. Gemini reading happens once the user taps
-    '✅ Done selecting photos' (see handle_done_collecting)."""
+    '✅ Done selecting photos' (see handle_done_collecting).
+
+    Instead of sending a new status message for every photo (which would
+    spam the chat), we send ONE status message on the first photo, then
+    EDIT that same message's text each time a new photo arrives, so it
+    always shows the current count in place."""
 
     # Make sure we start with a clean list the first time we enter this
     # state (e.g. a brand new report), but keep appending on later photos.
@@ -116,17 +121,48 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["photos"].append(largest_photo.file_id)
 
     count = len(context.user_data["photos"])
+    status_text = f"📸 {count} photo(s) received."
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Done", callback_data="done_collecting"),
+            InlineKeyboardButton("➕ Add more", callback_data="add_more_tapped"),
+        ]
+    ])
 
-    # Show (or update) a "Done" button so the user can tell us when they've
-    # finished sending photos. We send a NEW message with the count + button
-    # each time, since editing the exact right previous message reliably
-    # across album bursts is unnecessarily fragile.
-    await update.message.reply_text(
-        f"📸 Got photo #{count}. Send more, or tap Done when finished:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Done selecting photos", callback_data="done_collecting")]
-        ]),
-    )
+    status_message_id = context.user_data.get("status_message_id")
+
+    if status_message_id is None:
+        # First photo of this report - send the status message and
+        # remember its ID so later photos can edit it.
+        sent_message = await update.message.reply_text(status_text, reply_markup=keyboard)
+        context.user_data["status_message_id"] = sent_message.message_id
+    else:
+        # A later photo - edit the existing status message in place.
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_message_id,
+                text=status_text,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            # If editing fails for any reason (e.g. message too old, or
+            # was deleted), fall back to sending a fresh status message
+            # rather than silently losing the count display.
+            logger.warning(f"Could not edit status message, sending new one: {e}")
+            sent_message = await update.message.reply_text(status_text, reply_markup=keyboard)
+            context.user_data["status_message_id"] = sent_message.message_id
+
+    return COLLECTING_PHOTOS
+
+
+async def handle_add_more_tapped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when the user taps '➕ Add more'. This button is just a
+    gentle reminder/prompt - it does NOT change anything. Sending photos
+    directly (without tapping this) already works the same way."""
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("📤 Please upload your photo.")
     return COLLECTING_PHOTOS
 
 
@@ -144,6 +180,7 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(
             "⚠️ No photos found - please send at least one photo first."
         )
+        clear_session_data(context)
         return ConversationHandler.END
 
     await query.edit_message_text(
@@ -198,11 +235,19 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
 
     if last_error is not None:
         logger.error(f"Gemini call failed after retries: {last_error}")
+        count = len(photos)
         await query.message.reply_text(
-            "⚠️ I couldn't read the photo right now (the AI service is busy). "
-            "Please try sending the photo(s) again in a moment."
+            "⚠️ I couldn't read the photo right now (the AI service is busy).\n"
+            f"Your {count} photo(s) are still saved - just tap Done to try again, "
+            "or send more photos first.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Done", callback_data="done_collecting"),
+                    InlineKeyboardButton("➕ Add more", callback_data="add_more_tapped"),
+                ]
+            ]),
         )
-        return ConversationHandler.END
+        return COLLECTING_PHOTOS
 
     # Very simple parsing of Gemini's reply (we keep this basic on purpose)
     round_value = "unknown"
@@ -279,6 +324,14 @@ def build_caption(round_value: str, start_time: str) -> str:
     )
 
 
+def clear_session_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Wipes all data for the current report so the NEXT report starts
+    completely fresh. Called after a report is successfully sent,
+    cancelled, or ends in an unrecoverable error - so old photos from a
+    finished report never accidentally mix into a new one."""
+    context.user_data.clear()
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # STEP 3: Build and handle the group selection buttons
 # ───────────────────────────────────────────────────────────────────────────
@@ -307,6 +360,7 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if query.data == "cancel":
         await query.edit_message_text("❌ Cancelled. No report was sent.")
+        clear_session_data(context)
         return ConversationHandler.END
 
     if query.data == "send_now":
@@ -344,6 +398,7 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             result_lines.append("⚠️ Failed to send to: " + ", ".join(failed))
 
         await query.message.reply_text("\n".join(result_lines))
+        clear_session_data(context)
         return ConversationHandler.END
 
     # Otherwise, it's a "toggle:<id>" button
@@ -367,7 +422,7 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Clear any leftover data from a previous report, so a new /start
     # always begins a clean session.
-    context.user_data.clear()
+    clear_session_data(context)
     await update.message.reply_text(
         "👋 Hi! Send me one or more screenshots of your round/pairing screen "
         "(you can send several at once), then tap Done when finished."
@@ -375,6 +430,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    clear_session_data(context)
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
@@ -394,6 +450,7 @@ def main() -> None:
             COLLECTING_PHOTOS: [
                 MessageHandler(filters.PHOTO, handle_photo),  # more photos arriving
                 CallbackQueryHandler(handle_done_collecting, pattern="^done_collecting$"),
+                CallbackQueryHandler(handle_add_more_tapped, pattern="^add_more_tapped$"),
             ],
             WAITING_FOR_START_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
