@@ -19,8 +19,8 @@ LIVE_SCORE_LINK = "https://swisskh-app.web.app/live.html?id=6PjzJTLuIiSRHaEmh08A
 #   3. Visit: https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 #   4. Look for "chat":{"id": ... } in the response
 GROUPS = [
-    {"name": "Group", "id": -1003336753938},   # <-- replace with real ID
-    {"name": "BKH petanque", "id": -5176534515},    # <-- replace with real ID
+    {"name": "Tournament Group", "id": -5176534515},   # <-- replace with real ID
+    {"name": "BKH petanque", "id": -1003336753938},    # <-- replace with real ID
     {"name": "BKH info", "id": -1003818266123}, 
     {"name": "test", "id": -5324605890}, # <-- replace with real ID
 ]
