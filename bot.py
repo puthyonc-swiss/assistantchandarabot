@@ -767,14 +767,71 @@ def main() -> None:
     # exact URL correctly).
     webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
 
-    logger.info(f"Bot starting in webhook mode on port {port}...")
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TELEGRAM_BOT_TOKEN,
-        webhook_url=webhook_url,
-        allowed_updates=Update.ALL_TYPES,
+    # NOTE: We used to call application.run_webhook(...) here directly.
+    # That convenience method only ever exposes ONE route - the Telegram
+    # webhook path - so there was no URL a cronjob (e.g. cron-job.org)
+    # could ping to keep this free Render instance awake without hitting
+    # the Telegram-only path (which expects real Telegram POST payloads,
+    # not a plain GET ping).
+    #
+    # To add a second, harmless "/health" route, we now use PTB's own
+    # documented "custom webhook" pattern (see PTB's customwebhookbot.py
+    # example) instead of run_webhook(): we build a tiny Starlette app
+    # with two routes, and run it ourselves with uvicorn. The Telegram
+    # webhook route below behaves IDENTICALLY to before - same path
+    # (/{TELEGRAM_BOT_TOKEN}), same webhook_url, same allowed_updates.
+    # Nothing about how the bot talks to Telegram changes.
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import PlainTextResponse, Response
+    from starlette.routing import Route
+
+    async def telegram_webhook(request: Request) -> Response:
+        """Receives Telegram's POST updates - same job run_webhook() used
+        to do internally, just wired up explicitly now."""
+        data = await request.json()
+        update = Update.de_json(data=data, bot=application.bot)
+        await application.update_queue.put(update)
+        return Response()
+
+    async def health_check(_: Request) -> PlainTextResponse:
+        """Plain GET endpoint for cron-job.org (or any uptime pinger) to
+        hit. Always returns 200 OK - this is the route to put in
+        cron-job.org's URL field, e.g.:
+        https://assistantchandarabot.onrender.com/health"""
+        return PlainTextResponse("OK")
+
+    starlette_app = Starlette(
+        routes=[
+            Route(f"/{TELEGRAM_BOT_TOKEN}", telegram_webhook, methods=["POST"]),
+            Route("/health", health_check, methods=["GET"]),
+        ]
     )
+
+    async def run() -> None:
+        async with application:
+            await application.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+            )
+            await application.start()
+            logger.info(
+                f"Bot starting in webhook mode on port {port} "
+                f"(Telegram path: /{TELEGRAM_BOT_TOKEN}, health path: /health)..."
+            )
+            webserver = uvicorn.Server(
+                config=uvicorn.Config(
+                    app=starlette_app,
+                    port=port,
+                    host="0.0.0.0",
+                    log_level="info",
+                )
+            )
+            await webserver.serve()
+            await application.stop()
+
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
