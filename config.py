@@ -7,7 +7,7 @@ environment variables on Render (see render_env_example.txt).
 """
 
 # ── Live score link (shown in every report) ──────────────────────────────
-LIVE_SCORE_LINK = "https://example.com/your-live-score-link"  # <-- replace with your real link
+LIVE_SCORE_LINK = "https://swisskh-app.web.app/live.html?id=6PjzJTLuIiSRHaEmh08AKZA8VmM2"  # <-- replace with your real link
 
 # ── Telegram groups the bot can post to ───────────────────────────────────
 # "id" = the group's Telegram chat ID (a negative number, e.g. -1001234567890)
@@ -19,11 +19,12 @@ LIVE_SCORE_LINK = "https://example.com/your-live-score-link"  # <-- replace with
 #   3. Visit: https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 #   4. Look for "chat":{"id": ... } in the response
 GROUPS = [
-    {"name": "Test Group", "id": -5324605890},   # <-- replace with real ID
-    {"name": "🏆 VIP Group", "id": -1000000000002},    # <-- replace with real ID
-    {"name": "📊 Public Channel", "id": -1000000000003},  # <-- replace with real ID
+    {"name": "Group", "id": -1003336753938},   # <-- replace with real ID
+    {"name": "BKH petanque", "id": -5176534515},    # <-- replace with real ID
+    {"name": "BKH info", "id": -1003818266123}, 
+    {"name": "test", "id": -5324605890}, # <-- replace with real ID
 ]
 
 # ── Event name shown in reports (you can hardcode it, or we can make it
 #    ask you each time later — keeping it simple for now) ─────────────────
-EVENT_NAME = "ការប្រកួតពាន់រង្វាន់អភិបាលខេត្តកែប"
+EVENT_NAME = "ពានរង្វាន់ឯកឧត្តម បណ្ឌិត សោម ពិសិដ្ឋ"
