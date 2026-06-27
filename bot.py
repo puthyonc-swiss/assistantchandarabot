@@ -87,14 +87,16 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 # These are just labels for "where we are" in the chat with the user.
 (
     COLLECTING_PHOTOS,
+    CHOOSING_REPORT_TYPE,
     CHOOSING_MODE,
     CHOOSING_MANUAL_ROUND,
     WAITING_FOR_MANUAL_TIME,
     CHOOSING_TIME_LIMIT,
     CHOOSING_SCORE_LIMIT,
     WAITING_FOR_START_TIME,
+    CHOOSING_RESULT_ROUND,
     CHOOSING_GROUPS,
-) = range(8)
+) = range(10)
 
 # ── Manual mode options (Khmer labels) ─────────────────────────────────────
 # Round/stage names for the Manual flow. Order matters - this is the order
@@ -222,7 +224,10 @@ async def handle_add_more_tapped(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Triggered when the user taps '✅ Done selecting photos'.
-    Asks whether to use Manual entry or AI read for the round/time info."""
+    Asks what KIND of report this is first: 'Round' (the normal pairing/
+    schedule report - leads into the existing Manual/AI-read flow,
+    unchanged) or 'Result' (a short results-announcement report - new,
+    simpler flow with no time-limit/score-limit questions)."""
 
     query = update.callback_query
     await query.answer()
@@ -236,6 +241,29 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
     await query.edit_message_text(
+        f"📸 Got {len(photos)} photo(s).\n\n"
+        "តើជារបាយការណ៍ប្រភេទណា? (What kind of report is this?)",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎯 Round", callback_data="report_type_round"),
+                InlineKeyboardButton("📋 Result", callback_data="report_type_result"),
+            ]
+        ]),
+    )
+    return CHOOSING_REPORT_TYPE
+
+
+async def handle_report_type_round_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when '🎯 Round' is tapped. This is the ORIGINAL/unchanged
+    flow - shows the Manual vs AI-read choice exactly as
+    handle_done_collecting used to do directly, before the Round/Result
+    question existed."""
+    query = update.callback_query
+    await query.answer()
+
+    photos = context.user_data.get("photos", [])
+
+    await query.edit_message_text(
         f"📸 Got {len(photos)} photo(s).\n\nWhich one do you want to work?",
         reply_markup=InlineKeyboardMarkup([
             [
@@ -245,6 +273,50 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
         ]),
     )
     return CHOOSING_MODE
+
+
+async def handle_report_type_result_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when '📋 Result' is tapped. This is the NEW, simpler
+    flow: pick a round/stage (same Khmer buttons as Manual mode), then
+    skip straight to the draft - no start time, no time limit, no score
+    limit questions."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "តើជុំទីប៉ុន្មាន? (Which round?)",
+        reply_markup=build_manual_round_keyboard(),
+    )
+    return CHOOSING_RESULT_ROUND
+
+
+async def handle_result_round_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when a round/stage button is tapped on the Result path.
+    Builds the fixed Result caption (round number + the standard 3-line
+    Khmer announcement) and goes straight to the draft + group-selection
+    screen - no time/score questions, no 'Edit time & score' button
+    (is_manual=False)."""
+    query = update.callback_query
+    await query.answer()
+
+    idx = int(query.data.split(":", 1)[1])
+    round_label = MANUAL_ROUND_OPTIONS[idx]
+
+    caption = build_result_caption(round_label)
+    return await show_draft_and_group_buttons(query.message, context, caption, is_manual=False)
+
+
+def build_result_caption(round_label: str) -> str:
+    """Builds the final report text for the RESULT path (new, separate
+    from the Manual/AI-read caption builders). Fixed wording confirmed
+    with Chandara - round_label is inserted into the first line, the
+    rest of the text never changes between reports."""
+    return (
+        f"🏆 {config.EVENT_NAME}\n\n"
+        f"🎯 លិទ្ធផល {round_label}\n\n"
+        f"📋 សូមពិនិត្យមើលពិន្ទុខាងក្រោមមុនពេលគណកម្មកាបន្តការប្រកួតជុំបន្ទាប់\n"
+        f"✏️ បើសិនមានការដាក់ពិន្ទុ សូមអញ្ជើញមកលេខាតុដើម្បីកែពិន្ទុ\n"
+        f"⏱️ មានពេលវេលា 3 នាទី ដើម្បីពិនិត្យពិន្ទុ"
+    )
 
 
 async def handle_ai_read_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -720,6 +792,10 @@ def main() -> None:
                 CallbackQueryHandler(handle_done_collecting, pattern="^done_collecting$"),
                 CallbackQueryHandler(handle_add_more_tapped, pattern="^add_more_tapped$"),
             ],
+            CHOOSING_REPORT_TYPE: [
+                CallbackQueryHandler(handle_report_type_round_chosen, pattern="^report_type_round$"),
+                CallbackQueryHandler(handle_report_type_result_chosen, pattern="^report_type_result$"),
+            ],
             CHOOSING_MODE: [
                 CallbackQueryHandler(handle_manual_chosen, pattern="^mode_manual$"),
                 CallbackQueryHandler(handle_ai_read_chosen, pattern="^mode_ai$"),
@@ -738,6 +814,9 @@ def main() -> None:
             ],
             WAITING_FOR_START_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
+            ],
+            CHOOSING_RESULT_ROUND: [
+                CallbackQueryHandler(handle_result_round_selected, pattern="^manual_round:"),
             ],
             CHOOSING_GROUPS: [
                 CallbackQueryHandler(handle_edit_time_score_tapped, pattern="^edit_time_score$"),
