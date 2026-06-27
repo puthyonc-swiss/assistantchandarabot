@@ -4,12 +4,16 @@ bot.py
 SwissKH Telegram Report Bot
 
 WHAT THIS BOT DOES (step by step):
-  1. You send a screenshot photo to the bot (private chat)
-  2. Bot sends the photo to Gemini AI, asking it to read round/event info
-  3. If something important is missing (like start time), bot asks you
-  4. Bot shows you the draft report (photo + caption) for approval
-  5. Bot shows checkbox buttons for each group (from config.py)
-  6. You tap groups, then tap "Send" -> bot posts to those groups
+  1. You send one or more screenshot photos to the bot (private chat) -
+     send them as an album, or one at a time, either works the same way
+  2. Bot collects each photo silently and shows a "Done" button
+  3. When you tap Done, bot sends ONLY THE FIRST photo to Gemini AI to
+     read the round/event info (no need to "read" every photo)
+  4. If something important is missing (like start time), bot asks you
+  5. Bot shows you the draft report (ALL photos + one caption) for approval
+  6. Bot shows checkbox buttons for each group (from config.py)
+  7. You tap groups, then tap "Send" -> bot posts ALL photos (as one
+     album) + the caption to those groups
 
 SECRETS NEEDED (set these as environment variables, never hardcode them):
   TELEGRAM_BOT_TOKEN   - from @BotFather
@@ -25,6 +29,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -37,10 +42,8 @@ from telegram.ext import (
     filters,
 )
 
-import time
 from google import genai
 from google.genai import types
-from google.genai import errors as genai_errors
 from google.genai import errors as genai_errors
 
 import config  # our editable settings file (groups, link, event name)
@@ -78,7 +81,7 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ── Conversation states ────────────────────────────────────────────────────
 # These are just labels for "where we are" in the chat with the user.
-WAITING_FOR_START_TIME, CHOOSING_GROUPS = range(2)
+COLLECTING_PHOTOS, WAITING_FOR_START_TIME, CHOOSING_GROUPS = range(3)
 
 # Model choice: Flash-Lite is the cheapest Gemini model that still supports
 # vision (reading images). Good fit for simple screenshot reading.
@@ -94,21 +97,62 @@ GEMINI_RETRY_DELAY_SECONDS = 3
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# STEP 1: Receive the photo, send it to Gemini, read back what it found
+# STEP 1: Collect photos as they arrive (can be 1 or many, sent as an
+# album or one at a time - same handling either way)
 # ───────────────────────────────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when the user sends a photo to the bot."""
+    """Triggered every time the user sends a photo. Just stores it - does
+    NOT call Gemini yet. Gemini reading happens once the user taps
+    '✅ Done selecting photos' (see handle_done_collecting)."""
 
-    await update.message.reply_text("📸 Got it! Reading the screenshot...")
+    # Make sure we start with a clean list the first time we enter this
+    # state (e.g. a brand new report), but keep appending on later photos.
+    if "photos" not in context.user_data:
+        context.user_data["photos"] = []
 
     # Telegram sends multiple sizes of the same photo; the last one is the
     # largest/highest quality.
-    photo_file = await update.message.photo[-1].get_file()
-    photo_bytes = await photo_file.download_as_bytearray()
+    largest_photo = update.message.photo[-1]
+    context.user_data["photos"].append(largest_photo.file_id)
 
-    # Save the photo info in this chat's memory so later steps can use it
-    context.user_data["photo_bytes"] = bytes(photo_bytes)
-    context.user_data["photo_file_id"] = update.message.photo[-1].file_id
+    count = len(context.user_data["photos"])
+
+    # Show (or update) a "Done" button so the user can tell us when they've
+    # finished sending photos. We send a NEW message with the count + button
+    # each time, since editing the exact right previous message reliably
+    # across album bursts is unnecessarily fragile.
+    await update.message.reply_text(
+        f"📸 Got photo #{count}. Send more, or tap Done when finished:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Done selecting photos", callback_data="done_collecting")]
+        ]),
+    )
+    return COLLECTING_PHOTOS
+
+
+async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Triggered when the user taps '✅ Done selecting photos'.
+    Takes the FIRST photo collected and sends it to Gemini to read the
+    round number. The other photos (if any) are kept for later, when we
+    post the final report - all photos go out together as an album."""
+
+    query = update.callback_query
+    await query.answer()
+
+    photos = context.user_data.get("photos", [])
+    if not photos:
+        await query.edit_message_text(
+            "⚠️ No photos found - please send at least one photo first."
+        )
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        f"📸 Got {len(photos)} photo(s). Reading the first one..."
+    )
+
+    first_photo_file_id = photos[0]
+    photo_file = await context.bot.get_file(first_photo_file_id)
+    photo_bytes = await photo_file.download_as_bytearray()
 
     # Ask Gemini to read the screenshot
     # We retry automatically if Gemini's servers are temporarily overloaded
@@ -154,9 +198,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     if last_error is not None:
         logger.error(f"Gemini call failed after retries: {last_error}")
-        await update.message.reply_text(
+        await query.message.reply_text(
             "⚠️ I couldn't read the photo right now (the AI service is busy). "
-            "Please try sending the photo again in a moment."
+            "Please try sending the photo(s) again in a moment."
         )
         return ConversationHandler.END
 
@@ -170,13 +214,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     if round_value.lower() == "unknown" or round_value == "":
         # Gemini couldn't find the round - ask the user directly
-        await update.message.reply_text(
+        await query.message.reply_text(
             "🤔 I couldn't tell which round this is from the photo.\n"
             "What round is this? (e.g. just type: 1)"
         )
         return WAITING_FOR_START_TIME  # reuse this state to capture round instead
     else:
-        await update.message.reply_text(
+        await query.message.reply_text(
             f"✅ Looks like: Round {round_value}\n\n"
             "What time did this round start? (e.g. 12:00 PM)"
         )
@@ -207,11 +251,15 @@ async def handle_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     caption = build_caption(round_value, user_text)
     context.user_data["caption"] = caption
 
-    # Show the draft (photo + caption) back to the user for approval
-    await update.message.reply_photo(
-        photo=context.user_data["photo_file_id"],
-        caption=caption,
-    )
+    # Show the draft (ALL photos + caption) back to the user for approval.
+    # Telegram only shows the caption under the FIRST photo in an album -
+    # that's a Telegram limitation, not something we can change.
+    photos = context.user_data.get("photos", [])
+    media_group = [
+        InputMediaPhoto(media=file_id, caption=caption if i == 0 else None)
+        for i, file_id in enumerate(photos)
+    ]
+    await update.message.reply_media_group(media=media_group)
 
     # Show group checkboxes
     context.user_data["selected_groups"] = set()
@@ -268,15 +316,21 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await query.edit_message_text("📤 Sending...")
 
+        photos = context.user_data.get("photos", [])
+        caption = context.user_data["caption"]
+        media_group = [
+            InputMediaPhoto(media=file_id, caption=caption if i == 0 else None)
+            for i, file_id in enumerate(photos)
+        ]
+
         sent_to = []
         failed = []
         for group in config.GROUPS:
             if group["id"] in selected:
                 try:
-                    await context.bot.send_photo(
+                    await context.bot.send_media_group(
                         chat_id=group["id"],
-                        photo=context.user_data["photo_file_id"],
-                        caption=context.user_data["caption"],
+                        media=media_group,
                     )
                     sent_to.append(group["name"])
                 except Exception as e:
@@ -311,9 +365,12 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 # Basic commands
 # ───────────────────────────────────────────────────────────────────────────
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Clear any leftover data from a previous report, so a new /start
+    # always begins a clean session.
+    context.user_data.clear()
     await update.message.reply_text(
-        "👋 Hi! Send me a screenshot of your round/pairing screen, "
-        "and I'll help you write the Telegram report for it."
+        "👋 Hi! Send me one or more screenshots of your round/pairing screen "
+        "(you can send several at once), then tap Done when finished."
     )
 
 
@@ -334,6 +391,10 @@ def main() -> None:
             MessageHandler(filters.PHOTO, handle_photo),
         ],
         states={
+            COLLECTING_PHOTOS: [
+                MessageHandler(filters.PHOTO, handle_photo),  # more photos arriving
+                CallbackQueryHandler(handle_done_collecting, pattern="^done_collecting$"),
+            ],
             WAITING_FOR_START_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
             ],
