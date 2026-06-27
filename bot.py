@@ -153,6 +153,16 @@ GEMINI_RETRY_DELAY_SECONDS = 3
 
 
 # ───────────────────────────────────────────────────────────────────────────
+# Access control: only people in config.ALLOWED_USER_IDS can use this bot
+# ───────────────────────────────────────────────────────────────────────────
+def is_authorized_user(update: Update) -> bool:
+    """Checks the sender's Telegram numeric user ID against
+    config.ALLOWED_USER_IDS. Returns False for anyone not on that list."""
+    user = update.effective_user
+    return user is not None and user.id in config.ALLOWED_USER_IDS
+
+
+# ───────────────────────────────────────────────────────────────────────────
 # STEP 1: Collect photos as they arrive (can be 1 or many, sent as an
 # album or one at a time - same handling either way)
 # ───────────────────────────────────────────────────────────────────────────
@@ -165,6 +175,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     spam the chat), we send ONE status message on the first photo, then
     EDIT that same message's text each time a new photo arrives, so it
     always shows the current count in place."""
+
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "🚫 សុំទោស អ្នកមិនមានសិទ្ធិប្រើប្រាស់ bot នេះទេ។"
+        )
+        return ConversationHandler.END
 
     # Make sure we start with a clean list the first time we enter this
     # state (e.g. a brand new report), but keep appending on later photos.
@@ -242,7 +258,7 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
 
     await query.edit_message_text(
         f"📸 Got {len(photos)} photo(s).\n\n"
-        "តើជារបាយការណ៍ប្រភេទណា? (What kind of report is this?)",
+        "តើជារបាយការណ៍ប្រភេទណា?",
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🎯 Round", callback_data="report_type_round"),
@@ -283,7 +299,7 @@ async def handle_report_type_result_chosen(update: Update, context: ContextTypes
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "តើជុំទីប៉ុន្មាន? (Which round?)",
+        "តើជុំទីប៉ុន្មាន?",
         reply_markup=build_manual_round_keyboard(),
     )
     return CHOOSING_RESULT_ROUND
@@ -309,13 +325,16 @@ def build_result_caption(round_label: str) -> str:
     """Builds the final report text for the RESULT path (new, separate
     from the Manual/AI-read caption builders). Fixed wording confirmed
     with Chandara - round_label is inserted into the first line, the
-    rest of the text never changes between reports."""
+    rest of the text never changes between reports. Ends with the live
+    score link, same as the Round/Manual caption."""
     return (
         f"🏆 {config.EVENT_NAME}\n\n"
         f"🎯 លិទ្ធផល {round_label}\n\n"
         f"📋 សូមពិនិត្យមើលពិន្ទុខាងក្រោមមុនពេលគណកម្មកាបន្តការប្រកួតជុំបន្ទាប់\n"
-        f"✏️ បើសិនមានការដាក់ពិន្ទុ សូមអញ្ជើញមកលេខាតុដើម្បីកែពិន្ទុ\n"
-        f"⏱️ មានពេលវេលា 3 នាទី ដើម្បីពិនិត្យពិន្ទុ"
+        f"✏️ បើសិនមានការដាក់ពិន្ទុខុស សូមអញ្ជើញមកលេខាតុដើម្បីកែពិន្ទុ\n"
+        f"⏱️ មានពេលវេលា 3 នាទី ដើម្បីពិនិត្យពិន្ទុ\n\n"
+        f"📊 តាមដានពិន្ទុតាមគេហទំព័រខាងក្រោមនេះ\n"
+        f"{config.LIVE_SCORE_LINK}"
     )
 
 
@@ -760,6 +779,12 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 # Basic commands
 # ───────────────────────────────────────────────────────────────────────────
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized_user(update):
+        await update.message.reply_text(
+            "🚫 សុំទោស អ្នកមិនមានសិទ្ធិប្រើប្រាស់ bot នេះទេ។"
+        )
+        return
+
     # Clear any leftover data from a previous report, so a new /start
     # always begins a clean session.
     clear_session_data(context)
