@@ -87,16 +87,14 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 # These are just labels for "where we are" in the chat with the user.
 (
     COLLECTING_PHOTOS,
-    CHOOSING_REPORT_TYPE,
     CHOOSING_MODE,
     CHOOSING_MANUAL_ROUND,
     WAITING_FOR_MANUAL_TIME,
     CHOOSING_TIME_LIMIT,
     CHOOSING_SCORE_LIMIT,
     WAITING_FOR_START_TIME,
-    CHOOSING_RESULT_ROUND,
     CHOOSING_GROUPS,
-) = range(10)
+) = range(8)
 
 # ── Manual mode options (Khmer labels) ─────────────────────────────────────
 # Round/stage names for the Manual flow. Order matters - this is the order
@@ -153,16 +151,6 @@ GEMINI_RETRY_DELAY_SECONDS = 3
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# Access control: only people in config.ALLOWED_USER_IDS can use this bot
-# ───────────────────────────────────────────────────────────────────────────
-def is_authorized_user(update: Update) -> bool:
-    """Checks the sender's Telegram numeric user ID against
-    config.ALLOWED_USER_IDS. Returns False for anyone not on that list."""
-    user = update.effective_user
-    return user is not None and user.id in config.ALLOWED_USER_IDS
-
-
-# ───────────────────────────────────────────────────────────────────────────
 # STEP 1: Collect photos as they arrive (can be 1 or many, sent as an
 # album or one at a time - same handling either way)
 # ───────────────────────────────────────────────────────────────────────────
@@ -175,12 +163,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     spam the chat), we send ONE status message on the first photo, then
     EDIT that same message's text each time a new photo arrives, so it
     always shows the current count in place."""
-
-    if not is_authorized_user(update):
-        await update.message.reply_text(
-            "🚫 សុំទោស អ្នកមិនមានសិទ្ធិប្រើប្រាស់ bot នេះទេ។"
-        )
-        return ConversationHandler.END
 
     # Make sure we start with a clean list the first time we enter this
     # state (e.g. a brand new report), but keep appending on later photos.
@@ -240,10 +222,7 @@ async def handle_add_more_tapped(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Triggered when the user taps '✅ Done selecting photos'.
-    Asks what KIND of report this is first: 'Round' (the normal pairing/
-    schedule report - leads into the existing Manual/AI-read flow,
-    unchanged) or 'Result' (a short results-announcement report - new,
-    simpler flow with no time-limit/score-limit questions)."""
+    Asks whether to use Manual entry or AI read for the round/time info."""
 
     query = update.callback_query
     await query.answer()
@@ -257,29 +236,6 @@ async def handle_done_collecting(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
     await query.edit_message_text(
-        f"📸 Got {len(photos)} photo(s).\n\n"
-        "តើជារបាយការណ៍ប្រភេទណា?",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🎯 Round", callback_data="report_type_round"),
-                InlineKeyboardButton("📋 Result", callback_data="report_type_result"),
-            ]
-        ]),
-    )
-    return CHOOSING_REPORT_TYPE
-
-
-async def handle_report_type_round_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when '🎯 Round' is tapped. This is the ORIGINAL/unchanged
-    flow - shows the Manual vs AI-read choice exactly as
-    handle_done_collecting used to do directly, before the Round/Result
-    question existed."""
-    query = update.callback_query
-    await query.answer()
-
-    photos = context.user_data.get("photos", [])
-
-    await query.edit_message_text(
         f"📸 Got {len(photos)} photo(s).\n\nWhich one do you want to work?",
         reply_markup=InlineKeyboardMarkup([
             [
@@ -289,53 +245,6 @@ async def handle_report_type_round_chosen(update: Update, context: ContextTypes.
         ]),
     )
     return CHOOSING_MODE
-
-
-async def handle_report_type_result_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when '📋 Result' is tapped. This is the NEW, simpler
-    flow: pick a round/stage (same Khmer buttons as Manual mode), then
-    skip straight to the draft - no start time, no time limit, no score
-    limit questions."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "តើជុំទីប៉ុន្មាន?",
-        reply_markup=build_manual_round_keyboard(),
-    )
-    return CHOOSING_RESULT_ROUND
-
-
-async def handle_result_round_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Triggered when a round/stage button is tapped on the Result path.
-    Builds the fixed Result caption (round number + the standard 3-line
-    Khmer announcement) and goes straight to the draft + group-selection
-    screen - no time/score questions, no 'Edit time & score' button
-    (is_manual=False)."""
-    query = update.callback_query
-    await query.answer()
-
-    idx = int(query.data.split(":", 1)[1])
-    round_label = MANUAL_ROUND_OPTIONS[idx]
-
-    caption = build_result_caption(round_label)
-    return await show_draft_and_group_buttons(query.message, context, caption, is_manual=False)
-
-
-def build_result_caption(round_label: str) -> str:
-    """Builds the final report text for the RESULT path (new, separate
-    from the Manual/AI-read caption builders). Fixed wording confirmed
-    with Chandara - round_label is inserted into the first line, the
-    rest of the text never changes between reports. Ends with the live
-    score link, same as the Round/Manual caption."""
-    return (
-        f"🏆 {config.EVENT_NAME}\n\n"
-        f"🎯 លិទ្ធផល {round_label}\n\n"
-        f"📋 សូមពិនិត្យមើលពិន្ទុខាងក្រោមមុនពេលគណកម្មកាបន្តការប្រកួតជុំបន្ទាប់\n"
-        f"✏️ បើសិនមានការដាក់ពិន្ទុខុស សូមអញ្ជើញមកលេខាតុដើម្បីកែពិន្ទុ\n"
-        f"⏱️ មានពេលវេលា 3 នាទី ដើម្បីពិនិត្យពិន្ទុ\n\n"
-        f"📊 តាមដានពិន្ទុតាមគេហទំព័រខាងក្រោមនេះ\n"
-        f"{config.LIVE_SCORE_LINK}"
-    )
 
 
 async def handle_ai_read_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -778,20 +687,20 @@ async def handle_group_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ───────────────────────────────────────────────────────────────────────────
 # Basic commands
 # ───────────────────────────────────────────────────────────────────────────
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_authorized_user(update):
-        await update.message.reply_text(
-            "🚫 សុំទោស អ្នកមិនមានសិទ្ធិប្រើប្រាស់ bot នេះទេ។"
-        )
-        return
-
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Clear any leftover data from a previous report, so a new /start
-    # always begins a clean session.
+    # always begins a clean session - this matters even more now that
+    # /start can interrupt an IN-PROGRESS conversation (see fallbacks
+    # below), not just begin a brand new one.
     clear_session_data(context)
     await update.message.reply_text(
         "👋 Hi! Send me one or more screenshots of your round/pairing screen "
         "(you can send several at once), then tap Done when finished."
     )
+    # Returning END (instead of None) ensures that if /start is used to
+    # INTERRUPT an existing conversation (via fallbacks), PTB correctly
+    # closes out the old conversation state rather than leaving it stuck.
+    return ConversationHandler.END
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -817,10 +726,6 @@ def main() -> None:
                 CallbackQueryHandler(handle_done_collecting, pattern="^done_collecting$"),
                 CallbackQueryHandler(handle_add_more_tapped, pattern="^add_more_tapped$"),
             ],
-            CHOOSING_REPORT_TYPE: [
-                CallbackQueryHandler(handle_report_type_round_chosen, pattern="^report_type_round$"),
-                CallbackQueryHandler(handle_report_type_result_chosen, pattern="^report_type_result$"),
-            ],
             CHOOSING_MODE: [
                 CallbackQueryHandler(handle_manual_chosen, pattern="^mode_manual$"),
                 CallbackQueryHandler(handle_ai_read_chosen, pattern="^mode_ai$"),
@@ -840,15 +745,21 @@ def main() -> None:
             WAITING_FOR_START_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_time),
             ],
-            CHOOSING_RESULT_ROUND: [
-                CallbackQueryHandler(handle_result_round_selected, pattern="^manual_round:"),
-            ],
             CHOOSING_GROUPS: [
                 CallbackQueryHandler(handle_edit_time_score_tapped, pattern="^edit_time_score$"),
                 CallbackQueryHandler(handle_group_button),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_command)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_command),
+            # /start as a fallback means it works as an "escape hatch" even
+            # if you're stuck mid-conversation (e.g. waiting on a button
+            # tap that never came) - without this, /start would be SILENTLY
+            # IGNORED while a conversation is already in progress, because
+            # entry_points are only checked when there's NO active
+            # conversation. This was the bug Chandara hit on 2026-06-28.
+            CommandHandler("start", start_command),
+        ],
         # per_message=False is correct here because this conversation mixes
         # text-input states (WAITING_FOR_START_TIME) with button-tap states
         # (CHOOSING_GROUPS). You WILL see a one-time startup warning in the
@@ -871,71 +782,14 @@ def main() -> None:
     # exact URL correctly).
     webhook_url = f"{RENDER_EXTERNAL_URL}/{TELEGRAM_BOT_TOKEN}"
 
-    # NOTE: We used to call application.run_webhook(...) here directly.
-    # That convenience method only ever exposes ONE route - the Telegram
-    # webhook path - so there was no URL a cronjob (e.g. cron-job.org)
-    # could ping to keep this free Render instance awake without hitting
-    # the Telegram-only path (which expects real Telegram POST payloads,
-    # not a plain GET ping).
-    #
-    # To add a second, harmless "/health" route, we now use PTB's own
-    # documented "custom webhook" pattern (see PTB's customwebhookbot.py
-    # example) instead of run_webhook(): we build a tiny Starlette app
-    # with two routes, and run it ourselves with uvicorn. The Telegram
-    # webhook route below behaves IDENTICALLY to before - same path
-    # (/{TELEGRAM_BOT_TOKEN}), same webhook_url, same allowed_updates.
-    # Nothing about how the bot talks to Telegram changes.
-    import uvicorn
-    from starlette.applications import Starlette
-    from starlette.requests import Request
-    from starlette.responses import PlainTextResponse, Response
-    from starlette.routing import Route
-
-    async def telegram_webhook(request: Request) -> Response:
-        """Receives Telegram's POST updates - same job run_webhook() used
-        to do internally, just wired up explicitly now."""
-        data = await request.json()
-        update = Update.de_json(data=data, bot=application.bot)
-        await application.update_queue.put(update)
-        return Response()
-
-    async def health_check(_: Request) -> PlainTextResponse:
-        """Plain GET endpoint for cron-job.org (or any uptime pinger) to
-        hit. Always returns 200 OK - this is the route to put in
-        cron-job.org's URL field, e.g.:
-        https://assistantchandarabot.onrender.com/health"""
-        return PlainTextResponse("OK")
-
-    starlette_app = Starlette(
-        routes=[
-            Route(f"/{TELEGRAM_BOT_TOKEN}", telegram_webhook, methods=["POST"]),
-            Route("/health", health_check, methods=["GET"]),
-        ]
+    logger.info(f"Bot starting in webhook mode on port {port}...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=TELEGRAM_BOT_TOKEN,
+        webhook_url=webhook_url,
+        allowed_updates=Update.ALL_TYPES,
     )
-
-    async def run() -> None:
-        async with application:
-            await application.bot.set_webhook(
-                url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-            )
-            await application.start()
-            logger.info(
-                f"Bot starting in webhook mode on port {port} "
-                f"(Telegram path: /{TELEGRAM_BOT_TOKEN}, health path: /health)..."
-            )
-            webserver = uvicorn.Server(
-                config=uvicorn.Config(
-                    app=starlette_app,
-                    port=port,
-                    host="0.0.0.0",
-                    log_level="info",
-                )
-            )
-            await webserver.serve()
-            await application.stop()
-
-    asyncio.run(run())
 
 
 if __name__ == "__main__":
