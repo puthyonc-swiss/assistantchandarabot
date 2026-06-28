@@ -709,6 +709,31 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catches ANY exception raised inside any handler that wasn't already
+    caught locally. Without this, an unhandled error just gets logged by
+    PTB internally and the user sees nothing - no reply, no error message,
+    just silence. This was the root cause investigated on 2026-06-28: a
+    button tap during a brief Telegram timeout left a handler partway
+    through, with no message ever sent back."""
+    logger.error("Unhandled exception while processing an update:", exc_info=context.error)
+
+    # Try to tell the user something went wrong, if we can figure out
+    # which chat to reply to. This is best-effort - if even THIS fails,
+    # we just log it and move on, rather than raising again.
+    try:
+        if isinstance(update, Update) and update.effective_chat:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=(
+                    "⚠️ Something went wrong processing that. "
+                    "Please try again, or send /start to begin a fresh report."
+                ),
+            )
+    except Exception as notify_error:
+        logger.error(f"Could not notify user of the error: {notify_error}")
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Wire everything together
 # ───────────────────────────────────────────────────────────────────────────
@@ -770,6 +795,7 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    application.add_error_handler(global_error_handler)
 
     # ── Webhook setup (instead of polling) ─────────────────────────────────
     # Render gives every Web Service a random port via the PORT env variable -
