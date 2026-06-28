@@ -1,5 +1,9 @@
 # Telegram bot library (current stable as of June 2026)
-python-telegram-bot==22.7
+# [webhooks] extra is REQUIRED because bot.py uses run_webhook() - without
+# this extra, Render's deploy fails with:
+#   RuntimeError: To use `start_webhook`, PTB must be installed via
+#   `pip install "python-telegram-bot[webhooks]"`.
+python-telegram-bot[webhooks]==22.7
 
 # Google Gemini AI SDK (current official unified SDK)
 google-genai==2.3.0
@@ -8,12 +12,3 @@ google-genai==2.3.0
 # on your own computer (Render itself doesn't need this, it has its own
 # environment variable system)
 python-dotenv==1.0.1
-
-# NEW: needed for the custom webhook server in bot.py's main() function.
-# We switched from application.run_webhook() (which only exposes the
-# Telegram webhook path) to PTB's documented "custom webhook" pattern,
-# so we could add a second "/health" route for cron-job.org to ping and
-# keep this free Render instance awake. starlette builds the two routes
-# (Telegram webhook + health check), uvicorn runs the actual server.
-starlette==0.41.3
-uvicorn==0.34.0
